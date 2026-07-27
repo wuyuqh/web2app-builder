@@ -37,8 +37,12 @@ on:
         description: 'Pake targets (x64/arm64/intel/apple/appimage)'
         required: false
         default: ''
+      icon_url:
+        description: 'App icon URL (preferred over icon_base64)'
+        required: false
+        default: ''
       icon_base64:
-        description: 'App icon as base64-encoded PNG (optional)'
+        description: 'App icon as base64-encoded PNG (fallback, max ~30KB)'
         required: false
         default: ''
 
@@ -77,14 +81,20 @@ jobs:
       - name: Install pake-cli
         run: npm install -g pake-cli@3.11.6
 
-      # 解码图标（跨平台统一处理）
+      # 优先从 URL 下载图标（避免 base64 超出 inputs 65KB 限制）
+      - name: Download icon from URL
+        if: inputs.icon_url != ''
+        shell: bash
+        run: curl -fsSL -o icon.png "${{ inputs.icon_url }}" || echo "[W2A] icon URL download failed, using default"
+
+      # 解码图标（base64 兜底，仅 icon_url 为空时生效）
       - name: Decode icon (Unix)
-        if: inputs.icon_base64 != '' && inputs.platform != 'windows'
+        if: inputs.icon_url == '' && inputs.icon_base64 != '' && inputs.platform != 'windows'
         shell: bash
         run: printf '%s' "${{ inputs.icon_base64 }}" | base64 -d > icon.png
 
       - name: Decode icon (Windows)
-        if: inputs.icon_base64 != '' && inputs.platform == 'windows'
+        if: inputs.icon_url == '' && inputs.icon_base64 != '' && inputs.platform == 'windows'
         shell: pwsh
         run: |
           $bytes = [Convert]::FromBase64String("${{ inputs.icon_base64 }}")
