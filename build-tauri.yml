@@ -1,0 +1,248 @@
+name: Build Tauri App (Web2App)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'App URL'
+        required: true
+      name:
+        description: 'App name'
+        required: true
+      platform:
+        description: 'Platform: windows / macos / linux'
+        required: true
+        default: 'windows'
+      arch:
+        description: 'Architecture: x64 / arm64'
+        required: false
+        default: 'x64'
+      version:
+        description: 'App version'
+        required: false
+        default: '1.0.0'
+      identifier:
+        description: 'Bundle identifier (e.g. com.example.myapp)'
+        required: false
+        default: ''
+      user_agent:
+        description: 'User agent string'
+        required: false
+        default: ''
+      hide_title_bar:
+        description: 'Hide title bar (true/false)'
+        required: false
+        default: 'true'
+      toolbar:
+        description: '显示工具栏 (true/false)'
+        required: false
+        default: 'false'
+      always_on_top:
+        description: '默认窗口置顶 (true/false)'
+        required: false
+        default: 'false'
+      cinema_mode:
+        description: '影视增强模式 (true/false)'
+        required: false
+        default: 'false'
+      download_manager:
+        description: '下载管理器 (true/false)'
+        required: false
+        default: 'false'
+      targets:
+        description: 'Pake targets (x64/arm64/intel/apple/appimage)'
+        required: false
+        default: ''
+      icon_url:
+        description: 'App icon URL (preferred over icon_base64)'
+        required: false
+        default: ''
+      icon_base64:
+        description: 'App icon as base64-encoded PNG (fallback, max ~30KB)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: >-
+      ${{
+        inputs.platform == 'windows' && 'windows-latest' ||
+        inputs.platform == 'macos'   && 'macos-latest'   ||
+        'ubuntu-latest'
+      }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust/Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Linux 系统依赖（Tauri WebKit）
+      - name: Install Linux dependencies
+        if: inputs.platform == 'linux'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev
+
+      - name: Install pake-cli
+        run: npm install -g pake-cli@3.11.6
+
+      # 优先从 URL 下载图标（避免 base64 超出 inputs 65KB 限制）
+      - name: Download icon from URL
+        if: inputs.icon_url != ''
+        shell: bash
+        run: curl -fsSL -o icon.png "${{ inputs.icon_url }}" || echo "[W2A] icon URL download failed, using default"
+
+      # 解码图标（base64 兜底，仅 icon_url 为空时生效）
+      - name: Decode icon (Unix)
+        if: inputs.icon_url == '' && inputs.icon_base64 != '' && inputs.platform != 'windows'
+        shell: bash
+        run: printf '%s' "${{ inputs.icon_base64 }}" | base64 -d > icon.png
+
+      - name: Decode icon (Windows)
+        if: inputs.icon_url == '' && inputs.icon_base64 != '' && inputs.platform == 'windows'
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String("${{ inputs.icon_base64 }}")
+          [IO.File]::WriteAllBytes("$PWD/icon.png", $bytes)
+
+      # 生成 --inject 文件（工具栏 UI、UA 修正等）
+      - name: Generate inject files
+        shell: bash
+        run: |
+          args=(
+            --platform "${{ inputs.platform }}"
+            --url      "${{ inputs.url }}"
+            --name     "${{ inputs.name }}"
+          )
+          [ "${{ inputs.hide_title_bar }}"  = "true" ] && args+=(--hide-title-bar)
+          [ "${{ inputs.toolbar }}"         = "true" ] && args+=(--toolbar)
+          [ "${{ inputs.always_on_top }}"   = "true" ] && args+=(--always-on-top)
+          [ "${{ inputs.cinema_mode }}"     = "true" ] && args+=(--cinema-mode)
+          [ "${{ inputs.download_manager }}" = "true" ] && args+=(--download-manager)
+          python3 generate_inject.py "${args[@]}"
+
+      # ---------- Windows ----------
+      - name: Build (Windows)
+        if: inputs.platform == 'windows'
+        shell: pwsh
+        run: |
+          $targets    = if ("${{ inputs.targets }}"    -ne "") { "${{ inputs.targets }}" }    else { "x64" }
+          $identifier = if ("${{ inputs.identifier }}" -ne "") { "${{ inputs.identifier }}" } else { "com.web2app.${{ inputs.name }}" }
+          $ua         = if ("${{ inputs.user_agent }}" -ne "") { "${{ inputs.user_agent }}" } else { "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
+
+          # 用 splatting (@pakeArgs) 传参，避免 UA 里的括号/分号被 PowerShell 特殊解析
+          $pakeArgs = [System.Collections.Generic.List[string]]@(
+            "${{ inputs.url }}",
+            "--name",        "${{ inputs.name }}",
+            "--targets",     $targets,
+            "--identifier",  $identifier,
+            "--app-version", "${{ inputs.version }}",
+            "--user-agent",  $ua
+          )
+          if (Test-Path "icon.png")                      { $pakeArgs.Add("--icon"); $pakeArgs.Add("icon.png") }
+          if ("${{ inputs.hide_title_bar }}" -eq "true") { $pakeArgs.Add("--hide-title-bar") }
+
+          # 读取 inject 文件路径
+          if (Test-Path "inject_paths.txt") {
+            Get-Content "inject_paths.txt" | Where-Object { $_.Trim() -ne "" } | ForEach-Object {
+              $pakeArgs.Add("--inject")
+              $pakeArgs.Add($_.Trim())
+            }
+          }
+
+          Write-Host "Running: pake $($pakeArgs -join ' ')"
+          $pakeArray = $pakeArgs.ToArray()
+          pake @pakeArray
+
+      # ---------- macOS ----------
+      - name: Build (macOS)
+        if: inputs.platform == 'macos'
+        shell: bash
+        run: |
+          targets="${{ inputs.targets }}";    [ -z "$targets" ]    && targets="apple"
+          identifier="${{ inputs.identifier }}"; [ -z "$identifier" ] && identifier="com.web2app.${{ inputs.name }}"
+          ua="${{ inputs.user_agent }}";      [ -z "$ua" ]         && ua="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+          cmd=(pake "${{ inputs.url }}" --name "${{ inputs.name }}" --targets "$targets" \
+               --identifier "$identifier" --app-version "${{ inputs.version }}" --user-agent "$ua")
+          [ -f icon.png ]                                && cmd+=(--icon icon.png)
+          [ "${{ inputs.hide_title_bar }}" = "true" ]   && cmd+=(--hide-title-bar)
+
+          # 读取 inject 文件路径
+          if [ -f inject_paths.txt ]; then
+            while IFS= read -r p || [ -n "$p" ]; do
+              [ -n "$p" ] && cmd+=(--inject "$p")
+            done < inject_paths.txt
+          fi
+
+          echo "Running: ${cmd[*]}"
+          "${cmd[@]}"
+
+      # ---------- Linux ----------
+      - name: Build (Linux)
+        if: inputs.platform == 'linux'
+        shell: bash
+        run: |
+          targets="${{ inputs.targets }}";    [ -z "$targets" ]    && targets="appimage"
+          identifier="${{ inputs.identifier }}"; [ -z "$identifier" ] && identifier="com.web2app.${{ inputs.name }}"
+          ua="${{ inputs.user_agent }}";      [ -z "$ua" ]         && ua="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+          cmd=(pake "${{ inputs.url }}" --name "${{ inputs.name }}" --targets "$targets" \
+               --identifier "$identifier" --app-version "${{ inputs.version }}" --user-agent "$ua")
+          [ -f icon.png ]                                && cmd+=(--icon icon.png)
+          [ "${{ inputs.hide_title_bar }}" = "true" ]   && cmd+=(--hide-title-bar)
+
+          # 读取 inject 文件路径
+          if [ -f inject_paths.txt ]; then
+            while IFS= read -r p || [ -n "$p" ]; do
+              [ -n "$p" ] && cmd+=(--inject "$p")
+            done < inject_paths.txt
+          fi
+
+          echo "Running: ${cmd[*]}"
+          "${cmd[@]}"
+
+      # 找到产物并上传
+      - name: Find and upload artifact (Windows)
+        if: inputs.platform == 'windows'
+        shell: pwsh
+        run: |
+          $file = Get-ChildItem -Recurse -Include *.msi,*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $file) { Write-Error "No artifact found"; exit 1 }
+          echo "ARTIFACT_PATH=$($file.FullName)" >> $env:GITHUB_ENV
+          echo "ARTIFACT_NAME=$($file.Name)" >> $env:GITHUB_ENV
+
+      - name: Find and upload artifact (Unix)
+        if: inputs.platform != 'windows'
+        shell: bash
+        run: |
+          if [ "${{ inputs.platform }}" = "macos" ]; then
+            file=$(find . -name "*.dmg" | sort -t_ -k1 | tail -1)
+          else
+            file=$(find . \( -name "*.AppImage" -o -name "*.deb" \) | tail -1)
+          fi
+          [ -z "$file" ] && { echo "No artifact found"; exit 1; }
+          echo "ARTIFACT_PATH=$file" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=$(basename $file)" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}-${{ inputs.platform }}-${{ inputs.arch }}
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 7
+          if-no-files-found: error
