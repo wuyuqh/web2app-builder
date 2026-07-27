@@ -109,19 +109,21 @@ jobs:
           $identifier = if ("${{ inputs.identifier }}" -ne "") { "${{ inputs.identifier }}" } else { "com.web2app.${{ inputs.name }}" }
           $ua         = if ("${{ inputs.user_agent }}" -ne "") { "${{ inputs.user_agent }}" } else { "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
 
-          $cmd = @(
-            "pake", "${{ inputs.url }}",
+          # 用 splatting (@pakeArgs) 传参，避免 UA 里的括号/分号被 PowerShell 特殊解析
+          $pakeArgs = [System.Collections.Generic.List[string]]@(
+            "${{ inputs.url }}",
             "--name",        "${{ inputs.name }}",
             "--targets",     $targets,
             "--identifier",  $identifier,
             "--app-version", "${{ inputs.version }}",
             "--user-agent",  $ua
           )
-          if (Test-Path "icon.png")                    { $cmd += "--icon", "icon.png" }
-          if ("${{ inputs.hide_title_bar }}" -eq "true") { $cmd += "--hide-title-bar" }
+          if (Test-Path "icon.png")                      { $pakeArgs.Add("--icon"); $pakeArgs.Add("icon.png") }
+          if ("${{ inputs.hide_title_bar }}" -eq "true") { $pakeArgs.Add("--hide-title-bar") }
 
-          Write-Host "Running: $($cmd -join ' ')"
-          & $cmd[0] $cmd[1..($cmd.Length-1)]
+          Write-Host "Running: pake $($pakeArgs -join ' ')"
+          $pakeArray = $pakeArgs.ToArray()
+          pake @pakeArray
 
       # ---------- macOS ----------
       - name: Build (macOS)
