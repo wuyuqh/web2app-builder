@@ -600,6 +600,15 @@
       } catch (e2) {}
       return false;
     })();
+    const isWindowsDesktop = (function() {
+      try {
+        const plat = String(navigator.platform || '');
+        const ua = String(navigator.userAgent || '');
+        if (/win/i.test(plat) || /windows/i.test(ua)) return true;
+        if (navigator.userAgentData && /windows/i.test(String(navigator.userAgentData.platform || ''))) return true;
+      } catch (e) {}
+      return false;
+    })();
     // 独立浮层根节点：挂到 <html>，避免站点 body transform / overflow 把 fixed 控件吸到页面底部
     let uiRoot = document.getElementById('__w2a_ui_root');
     if (!uiRoot) {
@@ -1122,7 +1131,7 @@
       actions.appendChild(pin);
       if (downloadToggle) actions.appendChild(downloadToggle);
 
-      if (!isMacDesktop) {
+      if (!isMacDesktop && !isWindowsDesktop) {
         const minBtn = iconButton('minimize', '最小化');
         const maxBtn = iconButton('maximize', '最大化');
         const closeBtn = iconButton('close', '关闭');
