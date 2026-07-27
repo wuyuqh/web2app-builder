@@ -33,6 +33,22 @@ on:
         description: 'Hide title bar (true/false)'
         required: false
         default: 'true'
+      toolbar:
+        description: '显示工具栏 (true/false)'
+        required: false
+        default: 'false'
+      always_on_top:
+        description: '默认窗口置顶 (true/false)'
+        required: false
+        default: 'false'
+      cinema_mode:
+        description: '影视增强模式 (true/false)'
+        required: false
+        default: 'false'
+      download_manager:
+        description: '下载管理器 (true/false)'
+        required: false
+        default: 'false'
       targets:
         description: 'Pake targets (x64/arm64/intel/apple/appimage)'
         required: false
@@ -56,6 +72,9 @@ jobs:
       }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -100,6 +119,22 @@ jobs:
           $bytes = [Convert]::FromBase64String("${{ inputs.icon_base64 }}")
           [IO.File]::WriteAllBytes("$PWD/icon.png", $bytes)
 
+      # 生成 --inject 文件（工具栏 UI、UA 修正等）
+      - name: Generate inject files
+        shell: bash
+        run: |
+          args=(
+            --platform "${{ inputs.platform }}"
+            --url      "${{ inputs.url }}"
+            --name     "${{ inputs.name }}"
+          )
+          [ "${{ inputs.hide_title_bar }}"  = "true" ] && args+=(--hide-title-bar)
+          [ "${{ inputs.toolbar }}"         = "true" ] && args+=(--toolbar)
+          [ "${{ inputs.always_on_top }}"   = "true" ] && args+=(--always-on-top)
+          [ "${{ inputs.cinema_mode }}"     = "true" ] && args+=(--cinema-mode)
+          [ "${{ inputs.download_manager }}" = "true" ] && args+=(--download-manager)
+          python3 generate_inject.py "${args[@]}"
+
       # ---------- Windows ----------
       - name: Build (Windows)
         if: inputs.platform == 'windows'
@@ -121,6 +156,14 @@ jobs:
           if (Test-Path "icon.png")                      { $pakeArgs.Add("--icon"); $pakeArgs.Add("icon.png") }
           if ("${{ inputs.hide_title_bar }}" -eq "true") { $pakeArgs.Add("--hide-title-bar") }
 
+          # 读取 inject 文件路径
+          if (Test-Path "inject_paths.txt") {
+            Get-Content "inject_paths.txt" | Where-Object { $_.Trim() -ne "" } | ForEach-Object {
+              $pakeArgs.Add("--inject")
+              $pakeArgs.Add($_.Trim())
+            }
+          }
+
           Write-Host "Running: pake $($pakeArgs -join ' ')"
           $pakeArray = $pakeArgs.ToArray()
           pake @pakeArray
@@ -139,6 +182,13 @@ jobs:
           [ -f icon.png ]                                && cmd+=(--icon icon.png)
           [ "${{ inputs.hide_title_bar }}" = "true" ]   && cmd+=(--hide-title-bar)
 
+          # 读取 inject 文件路径
+          if [ -f inject_paths.txt ]; then
+            while IFS= read -r p || [ -n "$p" ]; do
+              [ -n "$p" ] && cmd+=(--inject "$p")
+            done < inject_paths.txt
+          fi
+
           echo "Running: ${cmd[*]}"
           "${cmd[@]}"
 
@@ -155,6 +205,13 @@ jobs:
                --identifier "$identifier" --app-version "${{ inputs.version }}" --user-agent "$ua")
           [ -f icon.png ]                                && cmd+=(--icon icon.png)
           [ "${{ inputs.hide_title_bar }}" = "true" ]   && cmd+=(--hide-title-bar)
+
+          # 读取 inject 文件路径
+          if [ -f inject_paths.txt ]; then
+            while IFS= read -r p || [ -n "$p" ]; do
+              [ -n "$p" ] && cmd+=(--inject "$p")
+            done < inject_paths.txt
+          fi
 
           echo "Running: ${cmd[*]}"
           "${cmd[@]}"
