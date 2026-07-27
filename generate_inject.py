@@ -8,6 +8,12 @@ import json
 import sys
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
 HERE = Path(__file__).resolve().parent
 TEMPLATES = HERE / 'inject_templates'
 SHARED_PLAYBACK = HERE / 'templates' / 'shared' / 'playback_store.js'
